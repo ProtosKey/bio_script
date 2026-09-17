@@ -1,0 +1,19 @@
+category: other
+status: active
+name: bio-script
+
+description:
+  Скрипт, который опрашивает GitHub API за проектами портфолио и собирает единый project.json из project.yaml, разложенных по репозиториям.
+
+stack:
+  - Python
+  - GitHub REST API
+  - PyYAML
+  - requests
+  - python-dotenv
+
+possibilities:
+  - Обходит все публичные репозитории пользователя через GitHub REST API.
+  - Забирает project.yaml из каждого репозитория, где он есть — валидирует обязательные поля (category, status, name).
+  - Собирает всё в единый project.json, который отдаёт статический сайт портфолио.
+  - Работает как cron-задача на VPS и по требованию вручную после пуша.
