@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+
+import base64
+import json
+import os
+import sys
+
+import requests
+import yaml
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_URL = "https://api.github.com"
+REQUIRED_FIELDS = ("category", "status", "name")
+
+def get_env(name):
+    value = os.environ.get(name)
+    if not value:
+        sys.exit(f"нет переменной окружения {name} (проверь .env)")
+    return value
+
+GITHUB_TOKEN = get_env("GITHUB_TOKEN")
+GITHUB_USERNAME = get_env("GITHUB_USERNAME")
+OUTPUT = get_env("OUTPUT")
+
+HEADERS = {
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+
+
+def list_repos(username):
+    repos = []
+    page = 1
+    while True:
+        response = requests.get(
+            f"{API_URL}/users/{username}/repos",
+            headers=HEADERS,
+            params={"per_page": 100, "page": page},
+            timeout=10,
+        )
+        response.raise_for_status()
+        batch = response.json()
+        if not batch:
+            break
+        repos.extend(batch)
+        page += 1
+    return repos
+
+
+def fetch_project_yaml(owner, repo):
+    response = requests.get(
+        f"{API_URL}/repos/{owner}/{repo}/contents/project.yaml",
+        headers=HEADERS,
+        timeout=10,
+    )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+
+    content = base64.b64decode(response.json()["content"]).decode("utf-8")
+    return yaml.safe_load(content)
+
+
+def is_valid(data):
+    return isinstance(data, dict) and all(field in data for field in REQUIRED_FIELDS)
+
+
+def main():
+    result = {}
+
+    for repo in list_repos(GITHUB_USERNAME):
+        name = repo["name"]
+        data = fetch_project_yaml(GITHUB_USERNAME, name)
+
+        if data is None:
+            continue
+
+        if not is_valid(data):
+            print(f"пропущен {name}: нет обязательных полей {REQUIRED_FIELDS}", file=sys.stderr)
+            continue
+
+        result[name] = data
+        print(f"добавлен {name}")
+
+    with open(OUTPUT, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    print(f"готово: {len(result)} проектов -> {OUTPUT}")
+
+
+if __name__ == "__main__":
+    main()
