@@ -34,7 +34,7 @@ HEADERS = {
 }
 
 def setup_logging():
-    fmt = logging.Formatter("[%(levelname)s] %(message)s - %(asctime)s", datefmt="%Y-%m-%d %H:%M:%S")
+    fmt = logging.Formatter("[%(levelname)-8s] %(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
     logger = logging.getLogger("bio-script")
     logger.setLevel(logging.INFO)
