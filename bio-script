@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import os
 import sys
 
@@ -14,8 +15,8 @@ load_dotenv()
 API_URL = "https://api.github.com"
 REQUIRED_FIELDS = ("category", "status", "name")
 
-def get_env(name):
-    value = os.environ.get(name)
+def get_env(name, default=None):
+    value = os.environ.get(name, default)
     if not value:
         sys.exit(f"нет переменной окружения {name} (проверь .env)")
     return value
@@ -23,6 +24,8 @@ def get_env(name):
 GITHUB_TOKEN = get_env("GITHUB_TOKEN")
 GITHUB_USERNAME = get_env("GITHUB_USERNAME")
 OUTPUT = get_env("OUTPUT")
+LOG_FILE = get_env("LOG_FILE", "script.log")
+ERROR_LOG_FILE = os.path.splitext(LOG_FILE)[0] + ".error.log"
 
 HEADERS = {
     "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -30,38 +33,84 @@ HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
+def setup_logging():
+    fmt = logging.Formatter("[%(levelname)s] %(message)s - %(asctime)s", datefmt="%Y-%m-%d %H:%M:%S")
+
+    logger = logging.getLogger("bio-script")
+    logger.setLevel(logging.INFO)
+
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    logger.addHandler(console)
+
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    logger.addHandler(file_handler)
+
+    error_handler = logging.FileHandler(ERROR_LOG_FILE, encoding="utf-8")
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(fmt)
+    logger.addHandler(error_handler)
+
+    return logger
+
+
+log = setup_logging()
+
 
 def list_repos(username):
     repos = []
     page = 1
     while True:
-        response = requests.get(
-            f"{API_URL}/users/{username}/repos",
-            headers=HEADERS,
-            params={"per_page": 100, "page": page},
-            timeout=10,
-        )
-        response.raise_for_status()
+        log.info(f"запрос списка репозиториев: страница {page}")
+        try:
+            response = requests.get(
+                f"{API_URL}/users/{username}/repos",
+                headers=HEADERS,
+                params={"per_page": 100, "page": page},
+                timeout=10,
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            log.error(f"не удалось получить список репозиториев (страница {page}): {e}")
+            raise
+
         batch = response.json()
         if not batch:
             break
         repos.extend(batch)
+        log.info(f"получено репозиториев на странице {page}: {len(batch)}")
         page += 1
     return repos
 
 
 def fetch_project_yaml(owner, repo):
-    response = requests.get(
-        f"{API_URL}/repos/{owner}/{repo}/contents/project.yaml",
-        headers=HEADERS,
-        timeout=10,
-    )
+    log.info(f"запрос project.yaml: {owner}/{repo}")
+    try:
+        response = requests.get(
+            f"{API_URL}/repos/{owner}/{repo}/contents/project.yaml",
+            headers=HEADERS,
+            timeout=10,
+        )
+    except requests.exceptions.RequestException as e:
+        log.error(f"не удалось запросить project.yaml для {repo}: {e}")
+        return None
+
     if response.status_code == 404:
         return None
-    response.raise_for_status()
 
-    content = base64.b64decode(response.json()["content"]).decode("utf-8")
-    return yaml.safe_load(content)
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        log.error(f"ошибка API при получении project.yaml для {repo}: {e}")
+        return None
+
+    try:
+        content = base64.b64decode(response.json()["content"]).decode("utf-8")
+        return yaml.safe_load(content)
+    except (yaml.YAMLError, KeyError, ValueError) as e:
+        log.error(f"не удалось распарсить project.yaml для {repo}: {e}")
+        return None
 
 
 def is_valid(data):
@@ -69,9 +118,16 @@ def is_valid(data):
 
 
 def main():
+    log.info("старт")
     result = {}
 
-    for repo in list_repos(GITHUB_USERNAME):
+    try:
+        repos = list_repos(GITHUB_USERNAME)
+    except requests.exceptions.RequestException as e:
+        log.error(f"не удалось получить список репозиториев: {e}")
+        sys.exit(1)
+
+    for repo in repos:
         name = repo["name"]
         data = fetch_project_yaml(GITHUB_USERNAME, name)
 
@@ -79,16 +135,16 @@ def main():
             continue
 
         if not is_valid(data):
-            print(f"пропущен {name}: нет обязательных полей {REQUIRED_FIELDS}", file=sys.stderr)
+            log.warning(f"пропущен {name}: нет обязательных полей {REQUIRED_FIELDS}")
             continue
 
         result[name] = data
-        print(f"добавлен {name}")
+        log.info(f"добавлен {name}")
 
     with open(OUTPUT, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
-    print(f"готово: {len(result)} проектов -> {OUTPUT}")
+    log.info(f"готово: {len(result)} проектов -> {OUTPUT}")
 
 
 if __name__ == "__main__":
